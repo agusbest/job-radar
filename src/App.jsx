@@ -9,18 +9,12 @@ import {
   RefreshCw,
   Sparkles,
   Check,
+  ChevronLeft,
 } from "lucide-react";
 
-import {
-  buildCoverLetterPrompt,
-  buildCVPrompt,
-  buildInterviewPrompt,
-  buildSalaryPrompt
-} from "./promptTemplates";
-
 // ---------------------------------------------------------------------------
-// Agus's profile — used both for scoring matches and for the cover letter
-// generation prompt. Edit this block if the CV changes.
+// Agus's profile — used both for scoring matches and for building the prompt
+// that gets copied for use in Claude/ChatGPT. Edit this if the CV changes.
 // ---------------------------------------------------------------------------
 const PROFILE = {
   name: "Agus Nugraha",
@@ -42,6 +36,7 @@ const SKILLS = [
   { key: "laravel", label: "Laravel" },
   { key: "javascript", label: "JavaScript" },
   { key: "typescript", label: "TypeScript" },
+  { key: "vue", label: "Vue" },
   { key: "express", label: "Express" },
   { key: "rest api", label: "REST API", alt: ["restful"] },
   { key: "mysql", label: "MySQL" },
@@ -52,11 +47,12 @@ const SKILLS = [
 ];
 
 const STORAGE_KEY = "job-radar-applied";
-// const SOURCE_LABEL = { remotive: "Remotive", wwr: "WeWorkRemotely" };
 const SOURCE_LABEL = {
   remotive: "Remotive",
-  arbeitnow: "Arbeitnow",
+  wwr: "WeWorkRemotely",
+  larajobs: "LaraJobs",
   jobicy: "Jobicy",
+  arbeitnow: "Arbeitnow",
 };
 
 function stripHtml(html) {
@@ -97,29 +93,56 @@ function timeAgo(dateStr) {
   return `${months} mo ago`;
 }
 
-function SignalMeter({ score }) {
+function buildPrompt(job, language) {
+  const langLine =
+    language === "id"
+      ? "Tulis SEMUA output (ringkasan CV maupun cover letter) dalam Bahasa Indonesia formal."
+      : "Write ALL output (both the tailored CV summary and the cover letter) in professional English.";
+
+  return `You are helping me tailor my CV and write a cover letter for a specific job application.
+
+MY PROFILE:
+Name: ${PROFILE.name}
+Target role: ${PROFILE.title}
+Location: ${PROFILE.location}
+Education: ${PROFILE.education}
+Summary: ${PROFILE.summary}
+GitHub: ${PROFILE.github}
+LinkedIn: ${PROFILE.linkedin}
+Portfolio: ${PROFILE.portfolio}
+
+JOB I'M APPLYING TO:
+Title: ${job.title}
+Company: ${job.company}
+Location requirement: ${job.location}
+Source: ${SOURCE_LABEL[job.source] || job.source}
+Job description:
+${stripHtml(job.description).slice(0, 3000)}
+
+WHAT I NEED FROM YOU:
+1. A short tailored CV summary (3-4 sentences) plus 5-6 bullet points highlighting the experience and skills from my profile that best match this specific job's requirements. Do not invent experience I don't have.
+2. A complete cover letter (250-350 words, plain text, no markdown/asterisks) that connects my real background to this job's actual requirements, opens with the role and company name, and closes with a clear call to action. Sign off with my name only (no email/phone in the body).
+
+${langLine}
+Do not fabricate any experience, employer, or skill that isn't in my profile above.`;
+}
+
+function SignalMeter({ score, size = "md" }) {
   const bucket = score >= 60 ? "strong" : score >= 30 ? "medium" : "weak";
   const colors = {
     strong: "var(--sig-strong)",
     medium: "var(--sig-medium)",
     weak: "var(--sig-weak)",
   };
-  const filled = Math.round((score / 100) * 10);
   return (
-    <div className="signal-meter" title={`${score}% skill match`}>
-      <div className="signal-bars">
-        {Array.from({ length: 10 }).map((_, i) => (
-          <span
-            key={i}
-            className="signal-bar"
-            style={{
-              background: i < filled ? colors[bucket] : "var(--bar-empty)",
-              height: `${6 + i * 1.6}px`,
-            }}
-          />
-        ))}
+    <div className={`meter meter-${size}`} title={`${score}% skill match`}>
+      <div className="meter-track">
+        <div
+          className="meter-fill"
+          style={{ width: `${score}%`, background: colors[bucket] }}
+        />
       </div>
-      <span className="signal-pct" style={{ color: colors[bucket] }}>
+      <span className="meter-pct" style={{ color: colors[bucket] }}>
         {score}%
       </span>
     </div>
@@ -135,17 +158,12 @@ export default function App() {
   const [sortBy, setSortBy] = useState("match");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [selectedId, setSelectedId] = useState(null);
-  const [mobileDetail, setMobileDetail] = useState(false);
   const [applied, setApplied] = useState({});
 
-  // const [coverLetter, setCoverLetter] = useState("");
-  // const [generating, setGenerating] = useState(false);
-  // const [genError, setGenError] = useState(null);
-  const [copiedText, setCopiedText] = useState("");
+  const [promptText, setPromptText] = useState("");
   const [language, setLanguage] = useState("en");
   const [copied, setCopied] = useState(false);
 
-  // ---- load applied jobs from localStorage --------------------------------
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -164,7 +182,6 @@ export default function App() {
     }
   }, []);
 
-  // ---- fetch jobs from our own backend (/api/jobs) ------------------------
   const fetchJobs = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -176,7 +193,9 @@ export default function App() {
       setJobs(data.jobs || []);
       if (data.failed && data.failed.length > 0) {
         const reasons = data.failedReasons || {};
-        const detail = data.failed.map((name) => `${name}${reasons[name] ? ` (${reasons[name]})` : ""}`).join(", ");
+        const detail = data.failed
+          .map((name) => `${name}${reasons[name] ? ` (${reasons[name]})` : ""}`)
+          .join(", ");
         setWarning(`Couldn't load: ${detail} — showing the rest.`);
       }
     } catch (e) {
@@ -204,8 +223,6 @@ export default function App() {
           j.tags.some((t) => t.toLowerCase().includes(q))
       );
     }
-
-
     return [...list].sort((a, b) =>
       sortBy === "match" ? b.score - a.score : new Date(b.publishedAt) - new Date(a.publishedAt)
     );
@@ -213,43 +230,8 @@ export default function App() {
 
   const selected = filtered.find((j) => j.id === selectedId) || scored.find((j) => j.id === selectedId);
 
-  const copyPrompt = async (type) => {
-    if (!selected) return;
-
-    let prompt = "";
-
-    switch (type) {
-      case "cover":
-        prompt = buildCoverLetterPrompt(PROFILE, SKILLS, selected);
-        break;
-
-      case "cv":
-        prompt = buildCVPrompt(PROFILE, SKILLS, selected);
-        break;
-
-      case "interview":
-        prompt = buildInterviewPrompt(PROFILE, SKILLS, selected);
-        break;
-
-      case "salary":
-        prompt = buildSalaryPrompt(PROFILE, selected);
-        break;
-
-      default:
-        return;
-    }
-
-    await navigator.clipboard.writeText(prompt);
-
-    setCopiedText(type);
-
-    setTimeout(() => {
-      setCopiedText("");
-    }, 2000);
-  };
   useEffect(() => {
-    // setCoverLetter("");
-    // setGenError(null);
+    setPromptText("");
     setCopied(false);
   }, [selectedId]);
 
@@ -261,34 +243,19 @@ export default function App() {
     persistApplied(next);
   };
 
-  // const generateCoverLetter = async () => {
-  //   if (!selected) return;
-  //   setGenerating(true);
-  //   setGenError(null);
-  //   setCoverLetter("");
-  //   try {
-  //     const res = await fetch("/api/generate-cover-letter", {
-  //       method: "POST",
-  //       headers: { "Content-Type": "application/json" },
-  //       body: JSON.stringify({ profile: PROFILE, job: selected, language }),
-  //     });
-  //     const data = await res.json();
-  //     if (!res.ok) throw new Error(data.error || "Generation failed");
-  //     setCoverLetter(data.text);
-  //   } catch (e) {
-  //     setGenError("Couldn't generate a cover letter just now. Try again.");
-  //   } finally {
-  //     setGenerating(false);
-  //   }
-  // };
+  const generatePrompt = () => {
+    if (!selected) return;
+    const text = buildPrompt(selected, language);
+    setPromptText(text);
+  };
 
-  const copyLetter = async () => {
+  const copyPrompt = async () => {
     try {
-      await navigator.clipboard.writeText(coverLetter);
+      await navigator.clipboard.writeText(promptText);
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     } catch (e) {
-      // clipboard blocked — ignore silently, text is still selectable
+      // clipboard blocked — text is still selectable in the textarea
     }
   };
 
@@ -298,18 +265,21 @@ export default function App() {
     <div className="jr-root">
       <style>{`
         .jr-root {
-          --bg: #0B1220;
-          --panel: #101A2E;
-          --panel-2: #0D1626;
-          --border: #1F2C46;
-          --text: #E7ECF3;
-          --text-muted: #8592A6;
-          --sig-strong: #45D8C0;
-          --sig-medium: #F0B429;
-          --sig-weak: #EF6F6C;
-          --bar-empty: #1C2740;
-          --accent: #45D8C0;
-          font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+          --bg: #FAFAFB;
+          --surface: #FFFFFF;
+          --surface-2: #F5F6F8;
+          --border: #E4E7EC;
+          --text: #101828;
+          --text-muted: #667085;
+          --accent: #0F9D8B;
+          --accent-tint: #E6F6F3;
+          --sig-strong: #12B76A;
+          --sig-medium: #F79009;
+          --sig-weak: #F04438;
+          --bar-empty: #EAECF0;
+          --shadow-sm: 0 1px 2px rgba(16,24,40,0.06);
+          --shadow-md: 0 4px 16px rgba(16,24,40,0.08);
+          font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
           background: var(--bg);
           color: var(--text);
           min-height: 100vh;
@@ -317,153 +287,208 @@ export default function App() {
           flex-direction: column;
         }
         .jr-mono { font-family: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace; }
-        .jr-topbar { display: flex; align-items: center; gap: 14px; padding: 16px 20px; border-bottom: 1px solid var(--border); background: linear-gradient(180deg, var(--panel-2), var(--bg)); }
-        .jr-title { display: flex; flex-direction: column; gap: 2px; }
-        .jr-title h1 { font-size: 15px; margin: 0; letter-spacing: 0.04em; text-transform: uppercase; }
-        .jr-title p { margin: 0; font-size: 12px; color: var(--text-muted); }
-        .jr-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--sig-strong); box-shadow: 0 0 0 3px rgba(69,216,192,0.15); }
-        .jr-topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-muted); }
-        .jr-controls { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--panel-2); }
-        .jr-search { display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; flex: 1; max-width: 360px; }
-        .jr-search input { background: transparent; border: none; outline: none; color: var(--text); font-size: 13px; width: 100%; }
+
+        .jr-topbar {
+          display: flex; align-items: center; gap: 14px;
+          padding: 20px 28px; background: var(--surface); border-bottom: 1px solid var(--border);
+        }
+        .jr-logo-dot {
+          width: 34px; height: 34px; border-radius: 10px; background: var(--accent-tint);
+          display: flex; align-items: center; justify-content: center; color: var(--accent);
+        }
+        .jr-title h1 { font-size: 16px; margin: 0; font-weight: 700; letter-spacing: -0.01em; color: var(--text); }
+        .jr-title p { margin: 2px 0 0; font-size: 12.5px; color: var(--text-muted); }
+        .jr-topbar-right {
+          margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 12.5px;
+          color: var(--text-muted); background: var(--surface-2); padding: 6px 12px; border-radius: 999px;
+        }
+        .jr-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--sig-strong); }
+
+        .jr-controls {
+          display: flex; align-items: center; gap: 10px; padding: 14px 28px;
+          background: var(--surface); border-bottom: 1px solid var(--border); flex-wrap: wrap;
+        }
+        .jr-search {
+          display: flex; align-items: center; gap: 8px; background: var(--surface-2);
+          border: 1px solid transparent; border-radius: 10px; padding: 9px 14px; flex: 1; max-width: 380px;
+        }
+        .jr-search:focus-within { border-color: var(--accent); background: var(--surface); }
+        .jr-search input { background: transparent; border: none; outline: none; color: var(--text); font-size: 13.5px; width: 100%; }
         .jr-search input::placeholder { color: var(--text-muted); }
-        .jr-select, .jr-btn { background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 7px 10px; font-size: 12px; cursor: pointer; }
-        .jr-btn { display: flex; align-items: center; gap: 6px; }
-        .jr-btn:hover, .jr-select:hover { border-color: var(--accent); }
+        .jr-select {
+          background: var(--surface-2); border: 1px solid transparent; color: var(--text);
+          border-radius: 10px; padding: 9px 12px; font-size: 13px; cursor: pointer; font-weight: 500;
+        }
+        .jr-select:hover { border-color: var(--border); }
+        .jr-icon-btn {
+          background: var(--surface-2); border: 1px solid transparent; color: var(--text);
+          border-radius: 10px; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+          cursor: pointer; margin-left: auto;
+        }
+        .jr-icon-btn:hover { border-color: var(--border); }
+
         .jr-body { display: flex; flex: 1; min-height: 0; }
-        .jr-list { width: 42%; min-width: 300px; border-right: 1px solid var(--border); overflow-y: auto; }
-        .jr-detail { flex: 1; overflow-y: auto; padding: 22px 26px; }
-        .jr-card { padding: 14px 18px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.12s ease; }
-        .jr-card:hover { background: rgba(69,216,192,0.05); }
-        .jr-card.active { background: rgba(69,216,192,0.08); border-left: 2px solid var(--accent); }
+        .jr-list { width: 40%; min-width: 320px; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+        .jr-detail { flex: 1; overflow-y: auto; padding: 28px 32px; }
+
+        .jr-card {
+          background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px;
+          cursor: pointer; transition: box-shadow 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+        }
+        .jr-card:hover { box-shadow: var(--shadow-sm); transform: translateY(-1px); }
+        .jr-card.active { border-color: var(--accent); background: var(--accent-tint); box-shadow: var(--shadow-sm); }
         .jr-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
-        .jr-card h3 { margin: 0 0 3px; font-size: 13.5px; }
-        .jr-card .company { font-size: 12px; color: var(--text-muted); }
-        .jr-card .meta { font-size: 11px; color: var(--text-muted); margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-        .jr-applied-chip { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--sig-strong); border: 1px solid var(--sig-strong); border-radius: 999px; padding: 2px 8px; display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; }
-        .jr-source-badge { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 4px; font-weight: 600; }
-        .jr-source-badge.remotive { background: rgba(69,216,192,0.14); color: var(--sig-strong); }
-        .jr-source-badge.wwr { background: rgba(139,163,255,0.14); color: #8BA3FF; }
-        .signal-meter { display: flex; align-items: center; gap: 8px; }
-        .signal-bars { display: flex; align-items: flex-end; gap: 2px; height: 20px; }
-        .signal-bar { width: 3px; border-radius: 1px; }
-        .signal-pct { font-size: 12px; font-weight: 600; }
-        .jr-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-muted); gap: 10px; text-align: center; padding: 40px; }
-        .jr-warning { font-size: 11.5px; color: var(--sig-medium); background: rgba(240,180,41,0.08); border: 1px solid rgba(240,180,41,0.3); border-radius: 8px; padding: 8px 12px; margin: 10px 14px; }
-        .jr-detail-header h2 { margin: 0 0 4px; font-size: 20px; }
-        .jr-detail-header .sub { color: var(--text-muted); font-size: 13px; margin-bottom: 14px; display: flex; align-items: center; }
-        .jr-tag { display: inline-block; font-size: 11px; background: var(--panel-2); border: 1px solid var(--border); color: var(--text-muted); border-radius: 999px; padding: 3px 9px; margin: 0 6px 6px 0; }
-        .jr-tag.matched { color: var(--sig-strong); border-color: var(--sig-strong); }
-        .jr-section-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin: 20px 0 8px; }
-        .jr-desc { font-size: 13px; line-height: 1.6; color: #C7D0DE; white-space: pre-wrap; max-height: 260px; overflow-y: auto; padding-right: 6px; }
-        .jr-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
-        .jr-btn-primary { background: var(--sig-strong); color: #06251F; border: none; font-weight: 600; border-radius: 8px; padding: 9px 16px; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 7px; }
-        .jr-btn-primary:hover { filter: brightness(1.08); }
-        .jr-btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
-        .jr-btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 9px 14px; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 7px; }
-        .jr-btn-ghost:hover { border-color: var(--accent); }
-        .jr-btn-ghost.on { border-color: var(--sig-strong); color: var(--sig-strong); }
-        .jr-lang-toggle { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 12px; }
-        .jr-lang-toggle button { background: var(--panel); color: var(--text-muted); border: none; padding: 8px 12px; cursor: pointer; }
-        .jr-lang-toggle button.active { background: var(--sig-strong); color: #06251F; font-weight: 600; }
-        .jr-letter-box { margin-top: 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
-        .jr-letter-box textarea { width: 100%; min-height: 260px; background: transparent; border: none; outline: none; color: var(--text); font-size: 13px; line-height: 1.6; resize: vertical; font-family: inherit; }
-        .jr-letter-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
-        .jr-error { color: var(--sig-weak); font-size: 12px; margin-top: 10px; }
+        .jr-card h3 { margin: 0 0 3px; font-size: 14px; font-weight: 600; color: var(--text); line-height: 1.35; }
+        .jr-card .company { font-size: 12.5px; color: var(--text-muted); }
+        .jr-card .meta { font-size: 11.5px; color: var(--text-muted); margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+        .jr-applied-chip {
+          font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--sig-strong);
+          background: rgba(18,183,106,0.1); border-radius: 999px; padding: 3px 9px; display: inline-flex;
+          align-items: center; gap: 4px; margin-top: 8px; font-weight: 600;
+        }
+        .jr-source-badge {
+          font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; padding: 3px 8px;
+          border-radius: 6px; font-weight: 600;
+        }
+        .jr-source-badge.remotive { background: rgba(15,157,139,0.1); color: var(--accent); }
+        .jr-source-badge.wwr { background: rgba(114,110,245,0.1); color: #6E62F0; }
+        .jr-source-badge.larajobs { background: rgba(240,80,63,0.1); color: #E0402F; }
+        .jr-source-badge.jobicy { background: rgba(59,130,246,0.1); color: #2563EB; }
+        .jr-source-badge.arbeitnow { background: rgba(217,70,239,0.1); color: #C026D3; }
+
+        .meter { display: flex; align-items: center; gap: 8px; }
+        .meter-track { width: 64px; height: 6px; border-radius: 999px; background: var(--bar-empty); overflow: hidden; }
+        .meter-fill { height: 100%; border-radius: 999px; transition: width 0.3s ease; }
+        .meter-pct { font-size: 12px; font-weight: 700; width: 34px; }
+        .meter-lg .meter-track { width: 120px; height: 8px; }
+        .meter-lg .meter-pct { font-size: 15px; width: 42px; }
+
+        .jr-empty {
+          display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%;
+          color: var(--text-muted); gap: 10px; text-align: center; padding: 40px; font-size: 13.5px;
+        }
+        .jr-warning {
+          font-size: 12px; color: #B54708; background: #FFFAEB; border: 1px solid #FEDF89;
+          border-radius: 10px; padding: 10px 14px; margin-bottom: 4px;
+        }
+
+        .jr-detail-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 26px; box-shadow: var(--shadow-sm); }
+        .jr-detail-header h2 { margin: 0 0 6px; font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+        .jr-detail-header .sub { color: var(--text-muted); font-size: 13.5px; margin-bottom: 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+
+        .jr-tag {
+          display: inline-block; font-size: 12px; background: var(--surface-2); border: 1px solid var(--border);
+          color: var(--text-muted); border-radius: 999px; padding: 4px 11px; margin: 0 6px 6px 0; font-weight: 500;
+        }
+        .jr-tag.matched { color: var(--accent); border-color: var(--accent); background: var(--accent-tint); }
+
+        .jr-section-label { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin: 22px 0 10px; font-weight: 600; }
+        .jr-desc { font-size: 13.5px; line-height: 1.65; color: #344054; white-space: pre-wrap; max-height: 260px; overflow-y: auto; padding: 14px 16px; background: var(--surface-2); border-radius: 12px; }
+
+        .jr-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 22px; align-items: center; }
+        .jr-btn-primary {
+          background: var(--accent); color: #FFFFFF; border: none; font-weight: 600;
+          border-radius: 10px; padding: 10px 18px; font-size: 13.5px; cursor: pointer; display: flex; align-items: center; gap: 7px;
+        }
+        .jr-btn-primary:hover { background: #0C8577; }
+        .jr-btn-ghost {
+          background: var(--surface); border: 1px solid var(--border); color: var(--text);
+          border-radius: 10px; padding: 10px 16px; font-size: 13.5px; cursor: pointer; display: flex; align-items: center; gap: 7px; font-weight: 500;
+        }
+        .jr-btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+        .jr-btn-ghost.on { border-color: var(--sig-strong); color: var(--sig-strong); background: rgba(18,183,106,0.06); }
+
+        .jr-lang-toggle { display: flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; font-size: 12.5px; }
+        .jr-lang-toggle button { background: var(--surface); color: var(--text-muted); border: none; padding: 9px 14px; cursor: pointer; font-weight: 600; }
+        .jr-lang-toggle button.active { background: var(--accent); color: #fff; }
+
+        .jr-prompt-box { margin-top: 18px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 14px; padding: 18px; }
+        .jr-prompt-hint { font-size: 12.5px; color: var(--text-muted); margin-bottom: 10px; line-height: 1.5; }
+        .jr-prompt-box textarea {
+          width: 100%; min-height: 280px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px;
+          color: var(--text); font-size: 12.5px; line-height: 1.6; resize: vertical; font-family: var(--jr-mono, ui-monospace, monospace);
+        }
+        .jr-prompt-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+
+        .jr-back-btn {
+          display: none; align-items: center; gap: 4px; background: transparent; border: none;
+          color: var(--text-muted); font-size: 13px; font-weight: 600; padding: 4px 0 14px; cursor: pointer;
+        }
+
         .jr-spin { animation: jr-spin 1s linear infinite; }
         @keyframes jr-spin { to { transform: rotate(360deg); } }
-       @media (max-width: 768px){
 
-        .jr-topbar{
-          padding:14px;
+        @media (max-width: 760px) {
+          .jr-topbar { padding: 14px 16px; gap: 10px; }
+          .jr-logo-dot { width: 30px; height: 30px; }
+          .jr-title h1 { font-size: 14px; }
+          .jr-title p { font-size: 11px; }
+          .jr-topbar-right { font-size: 11px; padding: 5px 9px; white-space: nowrap; }
+
+          .jr-controls { padding: 10px 12px; gap: 8px; }
+          .jr-search { max-width: none; flex-basis: 100%; order: 1; }
+          .jr-select { flex: 1; min-width: 0; font-size: 12.5px; padding: 8px 8px; order: 2; }
+          .jr-icon-btn { order: 3; margin-left: 0; flex-shrink: 0; }
+
+          .jr-body { flex-direction: column; }
+          .jr-list { width: 100%; padding: 12px; gap: 8px; }
+          .jr-detail { padding: 14px; }
+          .jr-detail-card { padding: 18px; border-radius: 14px; }
+          .jr-detail-header h2 { font-size: 18px; }
+
+          .jr-card { padding: 14px; }
+          .jr-card h3 { font-size: 13.5px; }
+          .meter-track { width: 48px; }
+
+          .jr-actions { gap: 8px; }
+          .jr-btn-primary, .jr-btn-ghost { padding: 9px 13px; font-size: 13px; flex: 1 1 auto; justify-content: center; }
+          .jr-lang-toggle { flex-shrink: 0; }
+          .jr-lang-toggle button { padding: 9px 11px; }
+
+          .jr-prompt-box textarea { min-height: 200px; font-size: 12px; }
+
+          /* Single-panel mode: show only the list until a job is picked,
+             then swap to a full-height detail view with a back button. */
+          .jr-body:not(.has-selection) .jr-detail { display: none; }
+          .jr-body.has-selection .jr-list { display: none; }
+          .jr-back-btn { display: flex; }
         }
-
-        .jr-controls{
-          flex-wrap:wrap;
-          padding:12px;
-          gap:8px;
-        }
-
-        .jr-search{
-          width:100%;
-          max-width:none;
-        }
-
-        .jr-select{
-          flex:1;
-        }
-
-        .jr-btn{
-          width:100%;
-          justify-content:center;
-        }
-
-        .jr-list{
-          width:100%;
-          min-width:0;
-          border-right:none;
-        }
-
-        .jr-detail{
-          display:none;
-        }
-
-        .jr-detail.mobile-open{
-          display:block;
-          position:fixed;
-          inset:0;
-          z-index:999;
-          background:#0B1220;
-          overflow:auto;
-          padding:20px;
-        }
-
-      }
-        .jr-source-badge.arbeitnow {
-            background: rgba(59,130,246,.15);
-            color:#60a5fa;
-          }
-
-          .jr-source-badge.jobicy {
-            background: rgba(16,185,129,.15);
-            color:#34d399;
-          }
-           
       `}</style>
 
       <div className="jr-topbar">
-        <RadioTower size={18} color="var(--accent)" />
+        <div className="jr-logo-dot"><RadioTower size={17} /></div>
         <div className="jr-title">
           <h1>Job Seeker</h1>
           <p>{PROFILE.name} · {PROFILE.title} · matched against your live stack</p>
         </div>
         <div className="jr-topbar-right jr-mono">
-          <span className="jr-status-dot" /> {jobs.length} jobs scanned · {appliedCount} applied
+          <span className="jr-status-dot" /> {jobs.length} jobs · {appliedCount} applied
         </div>
       </div>
 
       <div className="jr-controls">
         <div className="jr-search">
-          <Search size={14} color="var(--text-muted)" />
+          <Search size={15} color="var(--text-muted)" />
           <input placeholder="Filter by title, company or tag..." value={query} onChange={(e) => setQuery(e.target.value)} />
         </div>
         <select className="jr-select" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-          <option value="match">Sort: best match</option>
-          <option value="date">Sort: newest</option>
+          <option value="match">Best match</option>
+          <option value="date">Newest</option>
         </select>
         <select className="jr-select" value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}>
           <option value="all">All sources</option>
           <option value="remotive">Remotive</option>
-          {/* <option value="wwr">WeWorkRemotely</option> */}
-          <option value="arbeitnow">Arbeitnow</option>
+          <option value="wwr">WeWorkRemotely</option>
+          <option value="larajobs">LaraJobs (Laravel)</option>
           <option value="jobicy">Jobicy</option>
+          <option value="arbeitnow">Arbeitnow</option>
         </select>
-        <button className="jr-btn" onClick={fetchJobs} disabled={loading}>
-          <RefreshCw size={13} className={loading ? "jr-spin" : ""} /> Refresh
+        <button className="jr-icon-btn" onClick={fetchJobs} disabled={loading} title="Refresh">
+          <RefreshCw size={15} className={loading ? "jr-spin" : ""} />
         </button>
       </div>
 
-      <div className="jr-body">
+      <div className={`jr-body ${selected ? "has-selection" : ""}`}>
         <div className="jr-list">
           {loading && (
             <div className="jr-empty">
@@ -474,7 +499,7 @@ export default function App() {
           {!loading && error && (
             <div className="jr-empty">
               <span>{error}</span>
-              <button className="jr-btn" onClick={fetchJobs}>Try again</button>
+              <button className="jr-btn-ghost" onClick={fetchJobs}>Try again</button>
             </div>
           )}
           {!loading && !error && warning && <div className="jr-warning">{warning}</div>}
@@ -482,13 +507,7 @@ export default function App() {
           {!loading &&
             !error &&
             filtered.map((job) => (
-              <div key={job.id} className={`jr-card ${selectedId === job.id ? "active" : ""}`} onClick={() => {
-                setSelectedId(job.id);
-
-                if (window.innerWidth < 768) {
-                  setMobileDetail(true);
-                }
-              }}>
+              <div key={job.id} className={`jr-card ${selectedId === job.id ? "active" : ""}`} onClick={() => setSelectedId(job.id)}>
                 <div className="jr-card-top">
                   <div>
                     <h3>{job.title}</h3>
@@ -500,14 +519,7 @@ export default function App() {
                   <span className={`jr-source-badge ${job.source}`}>{SOURCE_LABEL[job.source]}</span>
                   <span>{job.location}</span>
                   <span>{timeAgo(job.publishedAt)}</span>
-                  {/* {job.jobType && <span>{job.jobType.replace("_", " ")}</span>} */}
-                  {job.jobType && (
-                    <span>
-                      {Array.isArray(job.jobType)
-                        ? job.jobType.join(", ")
-                        : String(job.jobType).replace(/_/g, " ")}
-                    </span>
-                  )}
+                  {job.jobType && <span>{job.jobType.replace("_", " ")}</span>}
                 </div>
                 {applied[job.id] && (
                   <div className="jr-applied-chip"><Check size={10} /> Applied</div>
@@ -516,33 +528,26 @@ export default function App() {
             ))}
         </div>
 
-        <div className={`jr-detail ${mobileDetail ? "mobile-open" : ""}`}>
+        <div className="jr-detail">
           {!selected && (
             <div className="jr-empty" style={{ height: "100%" }}>
               <Sparkles size={22} />
-              <span>Pick a job on the left to see the match and draft a cover letter.</span>
+              <span>Pick a job on the left to see the match and build your application prompt.</span>
             </div>
           )}
 
           {selected && (
-
-            <>
-              {window.innerWidth < 768 && (
-                <button
-                  className="jr-btn-ghost"
-                  style={{ marginBottom: 16 }}
-                  onClick={() => setMobileDetail(false)}
-                >
-                  ← Back
-                </button>
-              )}
+            <div className="jr-detail-card">
+              <button className="jr-back-btn" onClick={() => setSelectedId(null)}>
+                <ChevronLeft size={16} /> Back to list
+              </button>
               <div className="jr-detail-header">
                 <h2>{selected.title}</h2>
                 <div className="sub">
-                  <span className={`jr-source-badge ${selected.source}`} style={{ marginRight: 8 }}>{SOURCE_LABEL[selected.source]}</span>
-                  {selected.company} · {selected.location} · posted {timeAgo(selected.publishedAt)}
+                  <span className={`jr-source-badge ${selected.source}`}>{SOURCE_LABEL[selected.source]}</span>
+                  <span>{selected.company} · {selected.location} · posted {timeAgo(selected.publishedAt)}</span>
                 </div>
-                <SignalMeter score={selected.score} />
+                <SignalMeter score={selected.score} size="lg" />
               </div>
 
               <div className="jr-section-label">Matched skills ({selected.matched.length}/{SKILLS.length})</div>
@@ -567,55 +572,25 @@ export default function App() {
                   <button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>EN</button>
                   <button className={language === "id" ? "active" : ""} onClick={() => setLanguage("id")}>ID</button>
                 </div>
-                {/* <button className="jr-btn-primary" onClick={generateCoverLetter} disabled={generating}>
-                  {generating ? <Loader2 size={14} className="jr-spin" /> : <Sparkles size={14} />}
-                  {generating ? "Drafting..." : "Generate cover letter"}
-                </button> */}
-                <button
-                  className="jr-btn-primary"
-                  onClick={() => copyPrompt("cover")}
-                >
-                  <Copy size={14} />
-                  {copiedText === "cover"
-                    ? "Copied!"
-                    : "Cover Letter"}
-                </button>
-
-                <button
-                  className="jr-btn-ghost"
-                  onClick={() => copyPrompt("cv")}
-                >
-                  📄 CV
-                </button>
-
-                <button
-                  className="jr-btn-ghost"
-                  onClick={() => copyPrompt("interview")}
-                >
-                  🎯 Interview
-                </button>
-
-                <button
-                  className="jr-btn-ghost"
-                  onClick={() => copyPrompt("salary")}
-                >
-                  💰 Salary
+                <button className="jr-btn-primary" onClick={generatePrompt}>
+                  <Sparkles size={14} /> Generate CV & cover letter prompt
                 </button>
               </div>
 
-              {/* {genError && <div className="jr-error">{genError}</div>}
-
-              {coverLetter && (
-                <div className="jr-letter-box">
-                  <textarea value={coverLetter} onChange={(e) => setCoverLetter(e.target.value)} />
-                  <div className="jr-letter-toolbar">
-                    <button className="jr-btn-ghost" onClick={copyLetter}>
-                      {copied ? <Check size={14} /> : <Copy size={14} />} {copied ? "Copied" : "Copy"}
+              {promptText && (
+                <div className="jr-prompt-box">
+                  <div className="jr-prompt-hint">
+                    Copy this prompt and paste it into Claude, ChatGPT, or any AI chat — it'll generate a tailored CV summary and a full cover letter for this job. Nothing is sent anywhere automatically.
+                  </div>
+                  <textarea value={promptText} onChange={(e) => setPromptText(e.target.value)} />
+                  <div className="jr-prompt-toolbar">
+                    <button className="jr-btn-ghost" onClick={copyPrompt}>
+                      {copied ? <Check size={14} /> : <Copy size={14} />} {copied ? "Copied" : "Copy prompt"}
                     </button>
                   </div>
                 </div>
-              )} */}
-            </>
+              )}
+            </div>
           )}
         </div>
       </div>
