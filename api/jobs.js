@@ -1,84 +1,120 @@
-import { XMLParser } from "fast-xml-parser";
+const REMOTIVE_URL =
+  "https://remotive.com/api/remote-jobs?category=software-dev&limit=100";
 
-const WWR_FEED_URL =
-  "https://weworkremotely.com/categories/remote-programming-jobs.rss";
+const ARBEITNOW_URL =
+  "https://www.arbeitnow.com/api/job-board-api";
 
-function splitWwrTitle(rawTitle) {
-  const idx = rawTitle.indexOf(":");
-  if (idx > 0 && idx < 60) {
-    return {
-      company: rawTitle.slice(0, idx).trim(),
-      title: rawTitle.slice(idx + 1).trim(),
-    };
-  }
-  return { company: "WeWorkRemotely listing", title: rawTitle.trim() };
-}
+const JOBICY_URL =
+  "https://jobicy.com/api/v2/remote-jobs";
 
 async function fetchRemotive() {
-  const res = await fetch(
-    "https://remotive.com/api/remote-jobs?category=software-dev&limit=120"
-  );
-  if (!res.ok) throw new Error(`Remotive HTTP ${res.status}`);
+  const res = await fetch(REMOTIVE_URL);
+
+  if (!res.ok) {
+    throw new Error(`Remotive HTTP ${res.status}`);
+  }
+
   const data = await res.json();
-  return (data.jobs || []).map((j) => ({
-    id: `remotive-${j.id}`,
-    title: j.title,
-    company: j.company_name,
-    location: j.candidate_required_location,
-    url: j.url,
-    publishedAt: j.publication_date,
-    description: j.description,
-    tags: j.tags || [],
-    jobType: j.job_type,
+
+  return (data.jobs || []).map((job) => ({
+    id: `remotive-${job.id}`,
+    title: job.title,
+    company: job.company_name,
+    location: job.candidate_required_location,
+    url: job.url,
+    publishedAt: job.publication_date,
+    description: job.description,
+    tags: job.tags || [],
+    jobType: job.job_type,
     source: "remotive",
   }));
 }
 
-async function fetchWwr() {
-  const res = await fetch(WWR_FEED_URL);
-  if (!res.ok) throw new Error(`WWR HTTP ${res.status}`);
-  const xml = await res.text();
-  const parser = new XMLParser();
-  const parsed = parser.parse(xml);
-  const rawItems = parsed?.rss?.channel?.item || [];
-  const items = Array.isArray(rawItems) ? rawItems : [rawItems];
-  return items.map((item) => {
-    const rawTitle = String(item.title || "Untitled role");
-    const { company, title } = splitWwrTitle(rawTitle);
-    return {
-      id: `wwr-${item.link}`,
-      title,
-      company,
-      location: "Remote (Worldwide)",
-      url: item.link,
-      publishedAt: new Date(item.pubDate).toISOString(),
-      description: String(item.description || ""),
-      tags: item.category ? [String(item.category)] : [],
-      jobType: null,
-      source: "wwr",
-    };
-  });
+async function fetchArbeitnow() {
+  const res = await fetch(ARBEITNOW_URL);
+
+  if (!res.ok) {
+    throw new Error(`Arbeitnow HTTP ${res.status}`);
+  }
+
+  const data = await res.json();
+
+  return (data.data || []).map((job) => ({
+    id: `arbeitnow-${job.slug}`,
+    title: job.title,
+    company: job.company_name,
+    location: job.location || "Remote",
+    url: job.url,
+    publishedAt: job.created_at,
+    description: job.description,
+    tags: job.tags || [],
+    jobType: null,
+    source: "arbeitnow",
+  }));
+}
+
+async function fetchJobicy() {
+  const res = await fetch(JOBICY_URL);
+
+  if (!res.ok) {
+    throw new Error(`Jobicy HTTP ${res.status}`);
+  }
+
+  const data = await res.json();
+
+  return (data.jobs || []).map((job) => ({
+    id: `jobicy-${job.id}`,
+    title: job.jobTitle,
+    company: job.companyName,
+    location: job.jobGeo || "Remote",
+    url: job.url,
+    publishedAt: job.pubDate,
+    description: job.jobDescription,
+    tags: job.jobTags || [],
+    jobType: job.jobType,
+    source: "jobicy",
+  }));
 }
 
 export default async function handler(req, res) {
-  const [remotiveResult, wwrResult] = await Promise.allSettled([
+  const results = await Promise.allSettled([
     fetchRemotive(),
-    fetchWwr(),
+    fetchArbeitnow(),
+    fetchJobicy(),
   ]);
 
-  const jobs = [
-    ...(remotiveResult.status === "fulfilled" ? remotiveResult.value : []),
-    ...(wwrResult.status === "fulfilled" ? wwrResult.value : []),
+  const jobs = [];
+  const failed = [];
+  const failedReasons = {};
+
+  const names = [
+    "Remotive",
+    "Arbeitnow",
+    "Jobicy",
   ];
 
-  const failed = [];
-  if (remotiveResult.status === "rejected") failed.push("Remotive");
-  if (wwrResult.status === "rejected") failed.push("WeWorkRemotely");
+  results.forEach((result, index) => {
+    if (result.status === "fulfilled") {
+      jobs.push(...result.value);
+    } else {
+      console.error(`${names[index]} failed`, result.reason);
 
-  if (jobs.length === 0) {
-    res.status(502).json({ error: "Both job feeds failed to load." });
-    return;
-  }
+      failed.push(names[index]);
 
-  res.status(200).json({ jobs, failed });
+      failedReasons[names[index]] =
+        result.reason?.message || String(result.reason);
+    }
+  });
+
+  jobs.sort(
+    (a, b) =>
+      new Date(b.publishedAt).getTime() -
+      new Date(a.publishedAt).getTime()
+  );
+
+  res.status(200).json({
+    jobs,
+    failed,
+    failedReasons,
+  });
 }

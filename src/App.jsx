@@ -11,6 +11,13 @@ import {
   Check,
 } from "lucide-react";
 
+import {
+  buildCoverLetterPrompt,
+  buildCVPrompt,
+  buildInterviewPrompt,
+  buildSalaryPrompt
+} from "./promptTemplates";
+
 // ---------------------------------------------------------------------------
 // Agus's profile — used both for scoring matches and for the cover letter
 // generation prompt. Edit this block if the CV changes.
@@ -35,7 +42,6 @@ const SKILLS = [
   { key: "laravel", label: "Laravel" },
   { key: "javascript", label: "JavaScript" },
   { key: "typescript", label: "TypeScript" },
-  { key: "vue", label: "Vue" },
   { key: "express", label: "Express" },
   { key: "rest api", label: "REST API", alt: ["restful"] },
   { key: "mysql", label: "MySQL" },
@@ -46,7 +52,12 @@ const SKILLS = [
 ];
 
 const STORAGE_KEY = "job-radar-applied";
-const SOURCE_LABEL = { remotive: "Remotive", wwr: "WeWorkRemotely" };
+// const SOURCE_LABEL = { remotive: "Remotive", wwr: "WeWorkRemotely" };
+const SOURCE_LABEL = {
+  remotive: "Remotive",
+  arbeitnow: "Arbeitnow",
+  jobicy: "Jobicy",
+};
 
 function stripHtml(html) {
   if (!html) return "";
@@ -124,11 +135,13 @@ export default function App() {
   const [sortBy, setSortBy] = useState("match");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [selectedId, setSelectedId] = useState(null);
+  const [mobileDetail, setMobileDetail] = useState(false);
   const [applied, setApplied] = useState({});
 
-  const [coverLetter, setCoverLetter] = useState("");
-  const [generating, setGenerating] = useState(false);
-  const [genError, setGenError] = useState(null);
+  // const [coverLetter, setCoverLetter] = useState("");
+  // const [generating, setGenerating] = useState(false);
+  // const [genError, setGenError] = useState(null);
+  const [copiedText, setCopiedText] = useState("");
   const [language, setLanguage] = useState("en");
   const [copied, setCopied] = useState(false);
 
@@ -162,7 +175,9 @@ export default function App() {
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       setJobs(data.jobs || []);
       if (data.failed && data.failed.length > 0) {
-        setWarning(`Couldn't load ${data.failed.join(" and ")} right now — showing the rest.`);
+        const reasons = data.failedReasons || {};
+        const detail = data.failed.map((name) => `${name}${reasons[name] ? ` (${reasons[name]})` : ""}`).join(", ");
+        setWarning(`Couldn't load: ${detail} — showing the rest.`);
       }
     } catch (e) {
       setError("Couldn't reach the job feed API. Is the backend running? See README.");
@@ -189,6 +204,8 @@ export default function App() {
           j.tags.some((t) => t.toLowerCase().includes(q))
       );
     }
+
+
     return [...list].sort((a, b) =>
       sortBy === "match" ? b.score - a.score : new Date(b.publishedAt) - new Date(a.publishedAt)
     );
@@ -196,9 +213,43 @@ export default function App() {
 
   const selected = filtered.find((j) => j.id === selectedId) || scored.find((j) => j.id === selectedId);
 
+  const copyPrompt = async (type) => {
+    if (!selected) return;
+
+    let prompt = "";
+
+    switch (type) {
+      case "cover":
+        prompt = buildCoverLetterPrompt(PROFILE, SKILLS, selected);
+        break;
+
+      case "cv":
+        prompt = buildCVPrompt(PROFILE, SKILLS, selected);
+        break;
+
+      case "interview":
+        prompt = buildInterviewPrompt(PROFILE, SKILLS, selected);
+        break;
+
+      case "salary":
+        prompt = buildSalaryPrompt(PROFILE, selected);
+        break;
+
+      default:
+        return;
+    }
+
+    await navigator.clipboard.writeText(prompt);
+
+    setCopiedText(type);
+
+    setTimeout(() => {
+      setCopiedText("");
+    }, 2000);
+  };
   useEffect(() => {
-    setCoverLetter("");
-    setGenError(null);
+    // setCoverLetter("");
+    // setGenError(null);
     setCopied(false);
   }, [selectedId]);
 
@@ -210,26 +261,26 @@ export default function App() {
     persistApplied(next);
   };
 
-  const generateCoverLetter = async () => {
-    if (!selected) return;
-    setGenerating(true);
-    setGenError(null);
-    setCoverLetter("");
-    try {
-      const res = await fetch("/api/generate-cover-letter", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile: PROFILE, job: selected, language }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Generation failed");
-      setCoverLetter(data.text);
-    } catch (e) {
-      setGenError("Couldn't generate a cover letter just now. Try again.");
-    } finally {
-      setGenerating(false);
-    }
-  };
+  // const generateCoverLetter = async () => {
+  //   if (!selected) return;
+  //   setGenerating(true);
+  //   setGenError(null);
+  //   setCoverLetter("");
+  //   try {
+  //     const res = await fetch("/api/generate-cover-letter", {
+  //       method: "POST",
+  //       headers: { "Content-Type": "application/json" },
+  //       body: JSON.stringify({ profile: PROFILE, job: selected, language }),
+  //     });
+  //     const data = await res.json();
+  //     if (!res.ok) throw new Error(data.error || "Generation failed");
+  //     setCoverLetter(data.text);
+  //   } catch (e) {
+  //     setGenError("Couldn't generate a cover letter just now. Try again.");
+  //   } finally {
+  //     setGenerating(false);
+  //   }
+  // };
 
   const copyLetter = async () => {
     try {
@@ -321,16 +372,69 @@ export default function App() {
         .jr-error { color: var(--sig-weak); font-size: 12px; margin-top: 10px; }
         .jr-spin { animation: jr-spin 1s linear infinite; }
         @keyframes jr-spin { to { transform: rotate(360deg); } }
-        @media (max-width: 720px) {
-          .jr-body { flex-direction: column; }
-          .jr-list { width: 100%; max-height: 260px; border-right: none; border-bottom: 1px solid var(--border); }
+       @media (max-width: 768px){
+
+        .jr-topbar{
+          padding:14px;
         }
+
+        .jr-controls{
+          flex-wrap:wrap;
+          padding:12px;
+          gap:8px;
+        }
+
+        .jr-search{
+          width:100%;
+          max-width:none;
+        }
+
+        .jr-select{
+          flex:1;
+        }
+
+        .jr-btn{
+          width:100%;
+          justify-content:center;
+        }
+
+        .jr-list{
+          width:100%;
+          min-width:0;
+          border-right:none;
+        }
+
+        .jr-detail{
+          display:none;
+        }
+
+        .jr-detail.mobile-open{
+          display:block;
+          position:fixed;
+          inset:0;
+          z-index:999;
+          background:#0B1220;
+          overflow:auto;
+          padding:20px;
+        }
+
+      }
+        .jr-source-badge.arbeitnow {
+            background: rgba(59,130,246,.15);
+            color:#60a5fa;
+          }
+
+          .jr-source-badge.jobicy {
+            background: rgba(16,185,129,.15);
+            color:#34d399;
+          }
+           
       `}</style>
 
       <div className="jr-topbar">
         <RadioTower size={18} color="var(--accent)" />
         <div className="jr-title">
-          <h1>Job Radar</h1>
+          <h1>Job Seeker</h1>
           <p>{PROFILE.name} · {PROFILE.title} · matched against your live stack</p>
         </div>
         <div className="jr-topbar-right jr-mono">
@@ -350,7 +454,9 @@ export default function App() {
         <select className="jr-select" value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}>
           <option value="all">All sources</option>
           <option value="remotive">Remotive</option>
-          <option value="wwr">WeWorkRemotely</option>
+          {/* <option value="wwr">WeWorkRemotely</option> */}
+          <option value="arbeitnow">Arbeitnow</option>
+          <option value="jobicy">Jobicy</option>
         </select>
         <button className="jr-btn" onClick={fetchJobs} disabled={loading}>
           <RefreshCw size={13} className={loading ? "jr-spin" : ""} /> Refresh
@@ -376,7 +482,13 @@ export default function App() {
           {!loading &&
             !error &&
             filtered.map((job) => (
-              <div key={job.id} className={`jr-card ${selectedId === job.id ? "active" : ""}`} onClick={() => setSelectedId(job.id)}>
+              <div key={job.id} className={`jr-card ${selectedId === job.id ? "active" : ""}`} onClick={() => {
+                setSelectedId(job.id);
+
+                if (window.innerWidth < 768) {
+                  setMobileDetail(true);
+                }
+              }}>
                 <div className="jr-card-top">
                   <div>
                     <h3>{job.title}</h3>
@@ -388,7 +500,14 @@ export default function App() {
                   <span className={`jr-source-badge ${job.source}`}>{SOURCE_LABEL[job.source]}</span>
                   <span>{job.location}</span>
                   <span>{timeAgo(job.publishedAt)}</span>
-                  {job.jobType && <span>{job.jobType.replace("_", " ")}</span>}
+                  {/* {job.jobType && <span>{job.jobType.replace("_", " ")}</span>} */}
+                  {job.jobType && (
+                    <span>
+                      {Array.isArray(job.jobType)
+                        ? job.jobType.join(", ")
+                        : String(job.jobType).replace(/_/g, " ")}
+                    </span>
+                  )}
                 </div>
                 {applied[job.id] && (
                   <div className="jr-applied-chip"><Check size={10} /> Applied</div>
@@ -397,7 +516,7 @@ export default function App() {
             ))}
         </div>
 
-        <div className="jr-detail">
+        <div className={`jr-detail ${mobileDetail ? "mobile-open" : ""}`}>
           {!selected && (
             <div className="jr-empty" style={{ height: "100%" }}>
               <Sparkles size={22} />
@@ -406,7 +525,17 @@ export default function App() {
           )}
 
           {selected && (
+
             <>
+              {window.innerWidth < 768 && (
+                <button
+                  className="jr-btn-ghost"
+                  style={{ marginBottom: 16 }}
+                  onClick={() => setMobileDetail(false)}
+                >
+                  ← Back
+                </button>
+              )}
               <div className="jr-detail-header">
                 <h2>{selected.title}</h2>
                 <div className="sub">
@@ -438,13 +567,43 @@ export default function App() {
                   <button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>EN</button>
                   <button className={language === "id" ? "active" : ""} onClick={() => setLanguage("id")}>ID</button>
                 </div>
-                <button className="jr-btn-primary" onClick={generateCoverLetter} disabled={generating}>
+                {/* <button className="jr-btn-primary" onClick={generateCoverLetter} disabled={generating}>
                   {generating ? <Loader2 size={14} className="jr-spin" /> : <Sparkles size={14} />}
                   {generating ? "Drafting..." : "Generate cover letter"}
+                </button> */}
+                <button
+                  className="jr-btn-primary"
+                  onClick={() => copyPrompt("cover")}
+                >
+                  <Copy size={14} />
+                  {copiedText === "cover"
+                    ? "Copied!"
+                    : "Cover Letter"}
+                </button>
+
+                <button
+                  className="jr-btn-ghost"
+                  onClick={() => copyPrompt("cv")}
+                >
+                  📄 CV
+                </button>
+
+                <button
+                  className="jr-btn-ghost"
+                  onClick={() => copyPrompt("interview")}
+                >
+                  🎯 Interview
+                </button>
+
+                <button
+                  className="jr-btn-ghost"
+                  onClick={() => copyPrompt("salary")}
+                >
+                  💰 Salary
                 </button>
               </div>
 
-              {genError && <div className="jr-error">{genError}</div>}
+              {/* {genError && <div className="jr-error">{genError}</div>}
 
               {coverLetter && (
                 <div className="jr-letter-box">
@@ -455,7 +614,7 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-              )}
+              )} */}
             </>
           )}
         </div>
